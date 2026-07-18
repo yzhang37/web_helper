@@ -1,4 +1,6 @@
 # WebHelper 抓取指纹的单一来源。curl 腿与浏览器腿都从这里取,别再各写一份。
+from os import path
+
 CHROME_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
@@ -21,3 +23,6 @@ UA_METADATA = {
     "model": "",
     "mobile": False,
 }
+
+CACHE_DEFAULT_TTL = 3600  # 1 小时
+CACHE_DEFAULT_DIR = path.abspath(path.join(path.dirname(__file__), ".webhelper_cache"))

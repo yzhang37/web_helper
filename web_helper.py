@@ -1,8 +1,35 @@
+import re
 from typing import *
 
+from config import CACHE_DEFAULT_TTL
 import web_helper_tools
 from common_fetch import BrowserFetch, CurlFetch
+from web_helper_tools.cache_driver import cache
 from web_helper_tools.types import *
+
+
+def _cache_ttl(headers) -> Optional[int]:
+    """从响应头决定缓存 TTL(秒)。返回 None = 不该缓存。
+
+    - Set-Cookie / Cache-Control: no-store|no-cache|private → 不缓存
+    - Cache-Control: max-age=N → 用 N(N==0 也不缓存)
+    - 都没有 → 默认 TTL(config.CACHE_DEFAULT_TTL)
+    """
+    max_age = None
+    for name, value in headers or []:
+        n = str(name).lower()
+        v = str(value).lower()
+        if n == "set-cookie":
+            return None
+        if n == "cache-control":
+            if "no-store" in v or "no-cache" in v or "private" in v:
+                return None
+            m = re.search(r"max-age\s*=\s*(\d+)", v)
+            if m:
+                max_age = int(m.group(1))
+    if max_age is not None:
+        return max_age or None
+    return CACHE_DEFAULT_TTL
 
 
 def GetWebpage(
@@ -15,6 +42,15 @@ def GetWebpage(
     GetWebpage
 
     调用者只需要关心“拿到这个 URL 的可读内容”，不关心底层到底是系统 curl, 或者升级为 browser。
+
+    返回值
+    # - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
+    # - AccessMode：实际成功路径,只能是 curl 或 browser。
+    # - FinalURL：重定向后的最终 URL。
+    # - ResponseHeaders：完整响应头,保留顺序和重复项。
+    # - Content：curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
+    # - FromCache：是否命中 WebHelper 自己的缓存。
+    # - Error_Message：只放 curl/browser 的真实错误信息。
     """
 
     result: WebHelperResult = {
@@ -52,15 +88,18 @@ def GetWebpage(
     #    - 合并该 website 已保存的 cookies、session、默认 headers 等状态。
     #    - 这些状态后续由 SetWebsiteSettings / FreeWebsiteSettings 管。
 
-    # 3. TODO: 先查 WebHelper 自己的缓存。
-    #    - 命中且未失效：直接返回 FromCache=True。
-    #    - 没命中或 settings revision 变化：继续真实请求。
-    #    - FromCache 只表示 WebHelper 自己的缓存，不猜浏览器/HTTP 内部缓存。
-
+    # 3. 缓存
+    # - 命中且未失效：直接返回 FromCache=True。
+    # - 没命中或 settings revision 变化：继续真实请求。
+    # - FromCache 只表示 WebHelper 自己的缓存，不猜浏览器/HTTP 内部缓存。
     cache_key = web_helper_tools.use_local_cache(normalized_request)
-    if len(cache_key) > 0:
-        # TODO: not implemented yet!
-        pass
+    if cache_key:
+        hit = cache.get(cache_key)
+        if hit is not None:
+            hit = dict(hit)
+            hit["FromCache"] = True
+            return hit
+    result["FromCache"] = False
 
     # 4. curl 腿
     data, err = CurlFetch(
@@ -102,31 +141,21 @@ def GetWebpage(
         data.get("ContentType"),
     )
 
-    # 7. 保存结果和状态。
-    #    - 成功结果写入页面缓存。
-    #    - cookies/session 变化写入 website settings，并让相关缓存按规则失效。
-    #    - 不写死页面数量；调用几次由羊的任务决定，WebHelper 只管单次请求。
-    # TODO: 只有以下情况才写入/更新 cache
-    if len(cache_key) > 0:
-        # TODO: 1. result == 200
-        # TODO: 2. 跳过 Cache-Control: no-store
-        # TODO: 3. 跳过 Cache-Control: private
-        # TODO: 4. 跳过 Set-Cookie: ...
-        pass
-
-    # 8. 返回值
-    # - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
-    # - AccessMode：实际成功路径，只能是 curl 或 browser。
-    # - FinalURL：重定向后的最终 URL。
-    # - ResponseHeaders：完整响应头，保留顺序和重复项。
-    # - Content：curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
-    # - FromCache：是否命中 WebHelper 自己的缓存。
-    # - Error_Message：只放 curl/browser 的真实错误信息。
+    # 7. 组装返回值(从 data + 清洗后内容填入 result)
     result["StatusCode"] = data.get("StatusCode")
     result["StatusCodeText"] = data.get("StatusCodeText")
     result["FinalURL"] = data.get("FinalURL") or url
     result["ResponseHeaders"] = data.get("ResponseHeaders") or []
     result["Content"] = processed_content.content
+
+    # 8. 写缓存:仅 200 且响应头允许(no-store/no-cache/private/Set-Cookie 不缓存);
+    #    TTL 从 Cache-Control: max-age,没给用默认。放这儿是因为缓存的就是上面组装好的 result。
+    #    (cookies/session 写入 website settings 仍是 TODO。)
+    if cache_key and result["StatusCode"] == 200:
+        ttl = _cache_ttl(result["ResponseHeaders"])
+        if ttl is not None:
+            cache.set(cache_key, dict(result), ttl=ttl)
+
     return result
 
 
