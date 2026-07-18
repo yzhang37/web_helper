@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// cheap_pi WebHelper — browser leg (step 5).
+// WebHelper — browser leg (step 5).
 //
 // This is the browser fallback the Python main controller (web_helper.py)
 // calls when curl is not enough. It does exactly one thing: take a single
@@ -8,7 +8,7 @@
 // It does NOT own the six-function main logic, does NOT do curl, does NOT
 // cache, and does NOT run a whole-site crawl. It uses Crawlee's BrowserPool
 // (a "part", not the crawler.run() main loop) with the project-private
-// Playwright/Chromium runtime. Run it through scripts/run-with-runtime.sh so
+// Playwright/Chromium runtime. Run it through scripts/internal/run-with-runtime.sh so
 // PATH / PLAYWRIGHT_BROWSERS_PATH / private state all point at web_helper/.runtime/.
 //
 // I/O contract
@@ -50,8 +50,8 @@ import { chromium } from 'playwright';
 
 // Chrome fingerprint 的单一来源是 Python 的 config.py。.mjs 进不了 Python,
 // 所以 browser_fetch.py 在 spawn 时把同一份指纹序列化成 JSON 塞进
-// CHEAP_PI_FINGERPRINT 环境变量,这里解析回来(Option A)。
-const FP = JSON.parse(process.env.CHEAP_PI_FINGERPRINT || '{}');
+// WEB_HELPER_FINGERPRINT 环境变量,这里解析回来(Option A)。
+const FP = JSON.parse(process.env.WEB_HELPER_FINGERPRINT || '{}');
 // FP.ua, FP.accept_language, FP.referer, FP.ua_metadata
 // sec-ch-ua 头由 client-hints brands 拼出,和 UA 保持一致(否则默认露 HeadlessChrome)。
 const SEC_CH_UA = (FP.ua_metadata?.brands || [])

@@ -1,4 +1,4 @@
-"""cheap_pi WebHelper — curl leg.
+"""WebHelper — curl leg.
 
 This drives the project's pinned system ``curl`` binary directly via
 ``subprocess``. It is the cheap first leg the orchestrator tries before
@@ -12,7 +12,7 @@ failures such as DNS/TLS/connect/timeout errors are returned as the outer
 ``err`` in the Go-style ``(result, err)`` tuple. Content classification is
 web_helper's ``ContentClassify`` job, not this leg's.
 
-The system curl path comes from ``CHEAP_PI_SYSTEM_CURL`` when set, otherwise it
+The system curl path comes from ``WEB_HELPER_SYSTEM_CURL`` when set, otherwise it
 falls back to ``/usr/bin/curl``.
 """
 
@@ -36,7 +36,7 @@ _DEFAULT_HEADERS = {
 
 
 def _system_curl() -> str:
-    return os.environ.get("CHEAP_PI_SYSTEM_CURL", "/usr/bin/curl")
+    return os.environ.get("WEB_HELPER_SYSTEM_CURL", "/usr/bin/curl")
 
 
 def _normalize_headers(headers) -> list:
@@ -160,10 +160,10 @@ def CurlFetch(
     headers_file = None
     body_file = None
     try:
-        hf = tempfile.NamedTemporaryFile(prefix="cheap_pi_curl_", suffix=".hdr", delete=False)
+        hf = tempfile.NamedTemporaryFile(prefix="web_helper_curl_", suffix=".hdr", delete=False)
         headers_file = hf.name
         hf.close()
-        bf = tempfile.NamedTemporaryFile(prefix="cheap_pi_curl_", suffix=".body", delete=False)
+        bf = tempfile.NamedTemporaryFile(prefix="web_helper_curl_", suffix=".body", delete=False)
         body_file = bf.name
         bf.close()
 
@@ -250,7 +250,7 @@ def CurlFetch(
         return result, None
 
     except FileNotFoundError as err:
-        # curl binary missing at CHEAP_PI_SYSTEM_CURL.
+        # curl binary missing at WEB_HELPER_SYSTEM_CURL.
         return result, SystemError(f"system curl not found: {err}")
     except subprocess.TimeoutExpired:
         return result, TimeoutError(f"curl timed out after {timeout / 1000 + 10:.0f}s")

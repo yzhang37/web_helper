@@ -1,6 +1,9 @@
 .runtime/
+/.venv/
 node_modules/
 npm-debug.log*
+.idea/
+.webhelper_cache/
 
 __pycache__/
 *.py[cod]

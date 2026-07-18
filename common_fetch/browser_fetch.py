@@ -28,7 +28,7 @@ def BrowserFetch(
     }
 
     base_dir = _get_base_dir()
-    runtime_runner = os.path.join(base_dir, "scripts", "run-with-runtime.sh")
+    runtime_runner = os.path.join(base_dir, "scripts", "internal", "run-with-runtime.sh")
     browser_leg = os.path.join(base_dir, "common_fetch", "browser_fetch.mjs")
 
     # Cross-language指纹传递(Option A):config.py 是 Python,.mjs 是 Node 进不了。
@@ -39,7 +39,7 @@ def BrowserFetch(
         "referer": REFERER,
         "ua_metadata": UA_METADATA,
     })
-    env = {**os.environ, "CHEAP_PI_FINGERPRINT": fingerprint}
+    env = {**os.environ, "WEB_HELPER_FINGERPRINT": fingerprint}
 
     try:
         proc = subprocess.run(

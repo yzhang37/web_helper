@@ -20,7 +20,7 @@ import diskcache
 from config import CACHE_DEFAULT_TTL, CACHE_DEFAULT_DIR
 
 
-# 默认 TTL 与缓存目录(项目根 web_helper/.webhelper_cache/)。
+# 默认 TTL 与缓存目录由 config.py 统一决定。默认落在 web_helper/.runtime/cache/webhelper/。
 
 
 class CacheDriver(Protocol):

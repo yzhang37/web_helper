@@ -1,5 +1,7 @@
-# WebHelper 抓取指纹的单一来源。curl 腿与浏览器腿都从这里取,别再各写一份。
-from os import path
+# WebHelper 抓取指纹和项目内目录的单一来源。
+# curl 腿与浏览器腿都从这里取指纹,别再各写一份。
+import os
+from pathlib import Path
 
 CHROME_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -24,5 +26,10 @@ UA_METADATA = {
     "mobile": False,
 }
 
+WEB_HELPER_ROOT = Path(__file__).resolve().parent
+RUNTIME_DIR = Path(os.environ.get("WEB_HELPER_RUNTIME_DIR", WEB_HELPER_ROOT / ".runtime")).resolve()
+STATE_DIR = Path(os.environ.get("WEB_HELPER_STATE_DIR", RUNTIME_DIR / "state")).resolve()
 CACHE_DEFAULT_TTL = 3600  # 1 小时
-CACHE_DEFAULT_DIR = path.abspath(path.join(path.dirname(__file__), ".webhelper_cache"))
+CACHE_DEFAULT_DIR = str(
+    Path(os.environ.get("WEB_HELPER_CACHE_DIR", RUNTIME_DIR / "cache" / "webhelper")).resolve()
+)
