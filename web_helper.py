@@ -17,7 +17,6 @@ def GetWebpage(
     调用者只需要关心“拿到这个 URL 的可读内容”，不关心底层到底是系统 curl, 或者升级为 browser。
     """
 
-    # 预先定义返回的固定字段，不扩展。
     result: WebHelperResult = {
         "StatusCode": None,  # HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
         "StatusCodeText": "",
@@ -64,27 +63,12 @@ def GetWebpage(
         pass
 
     # 4. curl 腿
-    #    - curl 是第一路径，因为便宜、快、CPU 消耗低。成本护栏:浏览器比 curl 贵 10–100×,只在上面这些明确信号下才升。
-    #    √ 要跟随重定向，记录 FinalURL。
-    #    √ 要保留完整 ResponseHeaders，包括重复 header。
-    #    - 要捕获 transport error，例如 DNS/TLS/timeout/connect failed。
-    #    拿到结果后【代码确定性判,不是 LLM 判】:
-    #       200 + 正文够          → 用 curl 结果,去 ④,AccessMode=curl
-    #       403/406/429/503        ┐
-    #       cf-browser-verification├→ 升级浏览器(③)
-    #       正文空 / 过小(疑似SPA)┘
-    #       404                    → StatusCode=404,不升级(页面真没有,别浪费 Chromium)
-    #       连不上 / 超时          → 升级浏览器再试一次;还不行 → Error_Message=unreachable,返回
     data, err = CurlFetch(
         normalized_request["url"], method, request_body, request_headers
     )
     access_mode = "curl"
 
-    # 4.1 判断 curl 结果是否足够。
-    #    - 如果 HTTP 响应和 Content 已经可用，AccessMode='curl'。
-    #    - 如果只有空壳、JS challenge、必须执行脚本才能出现内容、
-    #      或 curl transport 失败但 browser 可能拿到内容，再进入 browser。
-    #    - 这个判断是内部控制流，不新增返回字段，不让羊处理复杂 verdict。
+    # 4.1 判断 curl 是否被 block，是的话执行 5 升级为 Browser
     if err is not None:
         access_mode = "browser"
     else:
@@ -94,30 +78,25 @@ def GetWebpage(
             data.get("ContentType"),
         )
         if content_verdict in (
-                web_helper_tools.ContentVerdict.BLOCKED,
-                web_helper_tools.ContentVerdict.NO_CONTENT,
+            web_helper_tools.ContentVerdict.BLOCKED,
+            web_helper_tools.ContentVerdict.NO_CONTENT,
         ):
             access_mode = "browser"
+    # update AccessMode in the final result
+    result["AccessMode"] = access_mode
 
-    # 5. 不够就升级浏览器腿(playwright+chromium,同一套头,只做 fallback)。
-    #    升级条件:curl 传输失败(连不上/超时),或内容被挡/空(blocked/no_content)。
-    #    404 等有真实 body 的会判 ok,不升级 —— 别浪费 Chromium。
+    # 5. Browser with playwright 腿
     if access_mode == "browser":
         browser_data, err = BrowserFetch(payload)
         if err is not None:
-            # 升级本身失败(浏览器腿起不来/超时):如实报错返回。
             result["Error_Message"] = str(err)
             return result
+
         data = browser_data
-    # 浏览器是最后一手,结果直接用(即便仍被挡)。issue4(blocked/no_content 是否落
-    # Error_Message)仍未定,这里不基于 verdict 改 Error_Message。
 
     # 6. 处理 Content(按 Content-Type 分流)
-    #    HTML → 走 HtmlContentProcessor 壳;具体轻清洗规则后面再填。
-    #           清洗要保守,不能删 header/footer/nav、联系方式、link/form/input/meta/data-*、
-    #           hidden token、JSON bootstrap script、Meta LSD 这类模板可能依赖的内容。
-    #    其他 → 默认处理器,原样返回。
-    #    raw_content 先留在 processed_content,等 step 7 缓存实现时再落地。
+    #    HTML → 走 HtmlContentProcessor 壳
+    #    其他 → 默认 Handler,原样返回。
     processed_content = web_helper_tools.ProcessContent(
         data.get("Content") or "",
         data.get("ContentType"),
@@ -135,22 +114,16 @@ def GetWebpage(
         # TODO: 4. 跳过 Set-Cookie: ...
         pass
 
-    # 8. 返回固定字段，不扩展。
-    #    - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
-    #    - AccessMode：实际成功路径，只能是 curl 或 browser。
-    #    - FinalURL：重定向后的最终 URL。
-    #    - ResponseHeaders：完整响应头，保留顺序和重复项。
-    #    - Content：curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
-    #    - FromCache：是否命中 WebHelper 自己的缓存。
-    #    - Error_Message：只放 curl/browser 的真实错误信息。
-    #
-    # 把最终选用的那条腿(curl 或升级后的 browser)的输出映射到固定返回字段。
-    #    StatusCode/FinalURL/ResponseHeaders/Content/Error_Message 来自 data;
-    #    AccessMode = 实际选用的腿;FromCache 恒 False(上面已设,不再改)。
-    #    (storageState 本步先忽略。)
+    # 8. 返回值
+    # - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
+    # - AccessMode：实际成功路径，只能是 curl 或 browser。
+    # - FinalURL：重定向后的最终 URL。
+    # - ResponseHeaders：完整响应头，保留顺序和重复项。
+    # - Content：curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
+    # - FromCache：是否命中 WebHelper 自己的缓存。
+    # - Error_Message：只放 curl/browser 的真实错误信息。
     result["StatusCode"] = data.get("StatusCode")
     result["StatusCodeText"] = data.get("StatusCodeText")
-    result["AccessMode"] = access_mode
     result["FinalURL"] = data.get("FinalURL") or url
     result["ResponseHeaders"] = data.get("ResponseHeaders") or []
     result["Content"] = processed_content.content

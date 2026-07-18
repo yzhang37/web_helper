@@ -1,23 +1,19 @@
-"""cheap_pi WebHelper — curl leg, pure-Python port of ``browser/curl_fetch.mjs``.
+"""cheap_pi WebHelper — curl leg.
 
 This drives the project's pinned system ``curl`` binary directly via
 ``subprocess``. It is the cheap first leg the orchestrator tries before
-escalating to the browser leg. For the two legs to be interchangeable this
-module emits the EXACT SAME output dict shape as the browser leg — ``ok``,
-``status``, ``StatusCode``, ``FinalURL``, ``ResponseHeaders``, ``ContentType``,
-``Content``, ``storageState`` (ALWAYS ``None`` here — curl has no session), and
-``error``.
+escalating to the browser leg. For the two legs to be interchangeable at the
+Python layer, this function returns the same ``FetchResult`` shape as
+``BrowserFetch``: ``StatusCode``, ``StatusCodeText``, ``FinalURL``,
+``ResponseHeaders``, ``ContentType``, ``Content``, and ``storageState``.
 
-Difference from the ``.mjs`` reference: this leg does NOT classify content.
-``status`` is TRANSPORT-LEVEL ONLY — ``"ok"`` when curl got any HTTP response
-(even 4xx/5xx), ``"error"`` when the transport failed (DNS/TLS/connect/timeout).
-Deciding blocked/no_content is now web_helper's ``ContentClassify`` job, not the
-leg's. ``CurlFetch`` never raises: transport failures and even a missing curl
-binary are encoded in the returned dict.
+HTTP 4xx/5xx responses are valid fetch results, not tool errors. Transport
+failures such as DNS/TLS/connect/timeout errors are returned as the outer
+``err`` in the Go-style ``(result, err)`` tuple. Content classification is
+web_helper's ``ContentClassify`` job, not this leg's.
 
-The system curl path comes from ``CHEAP_PI_SYSTEM_CURL`` (fallback
-``/usr/bin/curl``); run through ``scripts/run-with-runtime.sh`` so that env var
-is exported.
+The system curl path comes from ``CHEAP_PI_SYSTEM_CURL`` when set, otherwise it
+falls back to ``/usr/bin/curl``.
 """
 
 import json
@@ -29,7 +25,7 @@ from typing import Optional
 from config import CHROME_UA, ACCEPT_LANGUAGE, REFERER
 from web_helper_tools.types import FetchResult, RequestBody, RequestHeaders, ResponseHeaders
 
-# Same Chrome fingerprint the browser leg use — sourced from the single config.py.
+# Same Chrome fingerprint the browser leg uses — sourced from the single config.py.
 # The User-Agent is a default header here; caller headers override/extend these
 # case-insensitively.
 _DEFAULT_HEADERS = {
@@ -87,7 +83,8 @@ def _final_status_code_text(dump_text: str) -> str:
     _final_status_code_text
 
     Reason phrase from the final HTTP status line, if curl received one.
-    Such as HTTP/200 OK, HTTP/204 NO CONTENT
+    For example: "HTTP/1.1 200 OK" -> "OK".
+    HTTP/2 and HTTP/3 responses may not include a reason phrase, so return "".
     """
     status_line = ""
     for line in [ln.rstrip("\r") for ln in (dump_text or "").split("\n")]:
@@ -136,9 +133,9 @@ def CurlFetch(
 ) -> tuple[FetchResult, Optional[Exception]]:
     """Fetch ``url`` by driving the system curl binary. NEVER raises.
 
-    Returns the same 9-key dict the browser leg emits. ``status`` is
-    transport-level only ("ok" if curl got any HTTP response including 4xx/5xx,
-    "error" if the transport failed). Content classification is NOT done here.
+    Returns ``(result, err)``. ``err`` is only for curl/tool failures; HTTP
+    responses, including 4xx/5xx, are encoded in ``result`` with ``err=None``.
+    Content classification is NOT done here.
     """
     result: FetchResult = {
         "StatusCode": None,

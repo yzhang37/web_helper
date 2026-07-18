@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from typing import Protocol
+from bs4 import BeautifulSoup, Comment
 
 
 @dataclass(frozen=True)
@@ -20,15 +21,83 @@ class DefaultContentProcessor:
 
 
 class HtmlContentProcessor:
-    def process(self, content: str) -> str:
-        # TODO: 保守轻清洗 HTML,规则单独迭代。
-        return content
+    _EVENT_ATTRIBUTES = {
+        "onclick",
+        "onload",
+        "onerror",
+        "onchange",
+        "onsubmit",
+        "oninput",
+        "onmouseover",
+        "onmouseout",
+        "onkeydown",
+        "onkeyup",
+        "onfocus",
+        "onblur",
+    }
 
+    _ANALYTICS_ATTRIBUTES = {
+        "data-ga-event",
+        "data-gtm-click",
+    }
+
+    def process(self, content: str) -> str:
+        # 过滤掉 LLM 爬虫肯定用不到的信息，按下列列表
+        # 1. <style></style>
+        # 2. SVG，以及 SVG 的 d/坐标/滤镜
+        # 3. HTML 注释
+        # 4. 内联 style=""；
+        # 5. base64 图片正文
+        # 6. event handler, onclick / onload 等事件属性；
+        # 7. analytics 属性；
+
+        soup = BeautifulSoup(content, "html.parser")
+        # 1. 删除所有 <style>
+        # 2. 删除所有 SVG
+        for node in soup.select("style, svg"):
+            node.decompose()
+
+        # 4–7. 删除无用属性和 base64 图片正文。
+        for node in soup.find_all(True):
+            for name, value in list(node.attrs.items()):
+                lower_name = name.lower()
+
+                # 4. 内联 style=""；
+                if lower_name == "style":
+                    del node.attrs[name]
+                    continue
+
+                # 6. event handler, onclick / onload 等事件属性；
+                if lower_name in self._EVENT_ATTRIBUTES:
+                    del node.attrs[name]
+
+                # 7. analytics 属性；
+                if lower_name in self._ANALYTICS_ATTRIBUTES:
+                    del node.attrs[name]
+
+                # 5. base64 图片正文
+                if isinstance(value, str):
+                    marker = ";base64,"
+                    index = value.lower().find(marker)
+                    if value.lower().startswith("data:") and index >= 0:
+                        node.attrs[name] = value[:index + len(marker)] + "[REDACTED_BASE64]"
+
+        # 3. 删除 HTML 注释。
+        for comment in soup.find_all(string=lambda v: isinstance(v, Comment)):
+            comment.decompose()
+
+
+
+        return str(soup)
+
+
+_HTML_PROCESSOR = HtmlContentProcessor()
+_DEFAULT_PROCESSOR = DefaultContentProcessor()
 
 _PROCESSORS: dict[str, ContentProcessor] = {
-    "text/html": HtmlContentProcessor(),
+    "text/html": _HTML_PROCESSOR,
+    "application/xhtml": _HTML_PROCESSOR,
 }
-_DEFAULT_PROCESSOR = DefaultContentProcessor()
 
 
 def ProcessContent(content: str, content_type: str | None) -> ContentProcessingResult:

@@ -26,10 +26,6 @@ class FetchResult(TypedDict):
 
 
 class ContentVerdict(StrEnum):
-    """Classify 的粗判结果:内容拿到了 / 被挡 / 空。
-
-    不含 'error' —— 传输失败(连不上/超时)由抓取腿单独标,不是 classify 的结论。
-    """
     OK = "ok"
     BLOCKED = "blocked"
     NO_CONTENT = "no_content"
