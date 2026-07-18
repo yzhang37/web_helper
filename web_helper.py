@@ -1,12 +1,8 @@
-import json
-import os
-import subprocess
-from collections.abc import Mapping
 from typing import *
 
 import web_helper_tools
-from web_helper_tools import NormalizedHTTPRequestType
-from web_helper_tools.types import RequestBody, RequestHeaders, WebHelperResult
+from common_fetch import BrowserFetch, CurlFetch
+from web_helper_tools.types import *
 
 
 def GetWebpage(
@@ -23,13 +19,14 @@ def GetWebpage(
 
     # 预先定义返回的固定字段，不扩展。
     result: WebHelperResult = {
-        "StatusCode": None,       # HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
-        "AccessMode": "browser",  # TODO: 实际成功路径，只能是 curl 或 browser。
-        "FinalURL": url,          # 重定向后的最终 URL。
-        "ResponseHeaders": [],    # 完整响应头，保留顺序和重复项。
-        "Content": "",            # curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
-        "FromCache": False,       # 是否命中 WebHelper 自己的缓存。
-        "Error_Message": None     # 只放 curl/browser 的真实错误信息。
+        "StatusCode": None,  # HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
+        "StatusCodeText": "",
+        "AccessMode": "curl",  # 实际成功路径，只能是 curl 或 browser。
+        "FinalURL": url,  # 重定向后的最终 URL。
+        "ResponseHeaders": [],  # 完整响应头，保留顺序和重复项。
+        "Content": "",  # curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
+        "FromCache": False,  # 是否命中 WebHelper 自己的缓存。
+        "Error_Message": None  # 只放 curl/browser 的真实错误信息。
     }
 
     # 1. 规范化请求输入，并组装为 payload
@@ -37,8 +34,7 @@ def GetWebpage(
     if err is not None:
         result["Error_Message"] = f"failed to normalize http request: ({str(err)})"
         return result
-    # TODO: headers 交给浏览器腿,不经 NormalizeRequest, 也不查缓存。
-    payload: dict[str, Any] = {"url": normalized_request["url"]}
+    payload: FetchPayload = {"url": normalized_request["url"]}
     if method:
         payload["method"] = method
     if request_body is not None:
@@ -62,13 +58,15 @@ def GetWebpage(
     #    - 没命中或 settings revision 变化：继续真实请求。
     #    - FromCache 只表示 WebHelper 自己的缓存，不猜浏览器/HTTP 内部缓存。
 
-    if useLocalCache(normalized_request):
-        raise NotImplementedError() # Yet!
+    cache_key = web_helper_tools.use_local_cache(normalized_request)
+    if len(cache_key) > 0:
+        # TODO: not implemented yet!
+        pass
 
-    # 4. curl 腿(系统 /usr/bin/curl + 默认 Chrome 头 + 你传的 method/body/headers)
-    #    - curl 是第一路径，因为便宜、快、CPU 消耗低。
-    #    - 要跟随重定向，记录 FinalURL。
-    #    - 要保留完整 ResponseHeaders，包括重复 header。
+    # 4. curl 腿
+    #    - curl 是第一路径，因为便宜、快、CPU 消耗低。成本护栏:浏览器比 curl 贵 10–100×,只在上面这些明确信号下才升。
+    #    √ 要跟随重定向，记录 FinalURL。
+    #    √ 要保留完整 ResponseHeaders，包括重复 header。
     #    - 要捕获 transport error，例如 DNS/TLS/timeout/connect failed。
     #    拿到结果后【代码确定性判,不是 LLM 判】:
     #       200 + 正文够          → 用 curl 结果,去 ④,AccessMode=curl
@@ -77,38 +75,42 @@ def GetWebpage(
     #       正文空 / 过小(疑似SPA)┘
     #       404                    → StatusCode=404,不升级(页面真没有,别浪费 Chromium)
     #       连不上 / 超时          → 升级浏览器再试一次;还不行 → Error_Message=unreachable,返回
-    #     成本护栏:浏览器比 curl 贵 10–100×,只在上面这些明确信号下才升。
-    #
+    data, err = CurlFetch(
+        normalized_request["url"], method, request_body, request_headers
+    )
+    access_mode = "curl"
+
     # 4.1 判断 curl 结果是否足够。
     #    - 如果 HTTP 响应和 Content 已经可用，AccessMode='curl'。
     #    - 如果只有空壳、JS challenge、必须执行脚本才能出现内容、
     #      或 curl transport 失败但 browser 可能拿到内容，再进入 browser。
     #    - 这个判断是内部控制流，不新增返回字段，不让羊处理复杂 verdict。
-    #
-    data = {} # not implemented yet
-    # 4.1 判定内容是否可用
-    #     verdict ∈ ok / blocked / no_content。传输失败(连不上/超时)已在上面 err 分支拦掉,不进这里。
-    #     消费者(还没接线):curl→browser 升级判据;以及 blocked/no_content 是否落 Error_Message(issue4,先不动)。
-    content_verdict = web_helper_tools.ContentClassify(
-        data.get("Content") or "",
-        data.get("StatusCode"),
-        data.get("ContentType"),
-        )
-
-    # 5. 浏览器腿(playwright+chromium,同一套头),AccessMode=browser (记住最后返回 AccessMode = Browser)
-    #    - browser helper 只做 Crawlee/Playwright fallback，不承载六函数主逻辑。
-    #    - 它使用 WebHelper 私有 Node/Playwright/Chromium。
-    #    - 要带上同一 website 的 cookies/session，并把新 cookies/session 交回
-    #      Python 主控保存。
-    #    按 Content-Type 拿对的那份:
-    #      HTML     → 渲染后的 DOM(JS 跑完的)
-    #      JSON/XML → 原始 body(不是被浏览器包过的)
-    #    升级后仍空 / 仍被挡 → 返回 blocked / no_content(交 LLM 判 park)
-    data, err = _run_browser_leg(payload)
     if err is not None:
-        result["Error_Message"] = str(err)
-        return result
+        access_mode = "browser"
+    else:
+        content_verdict = web_helper_tools.ContentClassify(
+            data.get("Content") or "",
+            data.get("StatusCode"),
+            data.get("ContentType"),
+        )
+        if content_verdict in (
+                web_helper_tools.ContentVerdict.BLOCKED,
+                web_helper_tools.ContentVerdict.NO_CONTENT,
+        ):
+            access_mode = "browser"
 
+    # 5. 不够就升级浏览器腿(playwright+chromium,同一套头,只做 fallback)。
+    #    升级条件:curl 传输失败(连不上/超时),或内容被挡/空(blocked/no_content)。
+    #    404 等有真实 body 的会判 ok,不升级 —— 别浪费 Chromium。
+    if access_mode == "browser":
+        browser_data, err = BrowserFetch(payload)
+        if err is not None:
+            # 升级本身失败(浏览器腿起不来/超时):如实报错返回。
+            result["Error_Message"] = str(err)
+            return result
+        data = browser_data
+    # 浏览器是最后一手,结果直接用(即便仍被挡)。issue4(blocked/no_content 是否落
+    # Error_Message)仍未定,这里不基于 verdict 改 Error_Message。
 
     # 6. 处理 Content(按 Content-Type 分流)
     #    HTML → 走 HtmlContentProcessor 壳;具体轻清洗规则后面再填。
@@ -126,11 +128,12 @@ def GetWebpage(
     #    - cookies/session 变化写入 website settings，并让相关缓存按规则失效。
     #    - 不写死页面数量；调用几次由羊的任务决定，WebHelper 只管单次请求。
     # TODO: 只有以下情况才写入/更新 cache
-    # 1. result == 200
-    # 2. 跳过 Cache-Control: no-store
-    # 3. 跳过 Cache-Control: private
-    # 4. 跳过 Set-Cookie: ...
-
+    if len(cache_key) > 0:
+        # TODO: 1. result == 200
+        # TODO: 2. 跳过 Cache-Control: no-store
+        # TODO: 3. 跳过 Cache-Control: private
+        # TODO: 4. 跳过 Set-Cookie: ...
+        pass
 
     # 8. 返回固定字段，不扩展。
     #    - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
@@ -141,70 +144,17 @@ def GetWebpage(
     #    - FromCache：是否命中 WebHelper 自己的缓存。
     #    - Error_Message：只放 curl/browser 的真实错误信息。
     #
-    # 把浏览器腿输出映射到固定返回字段。
-    #    StatusCode/FinalURL/ResponseHeaders/Content/Error_Message 来自浏览器腿;
-    #    AccessMode 恒 "browser",FromCache 恒 False(上面已设,不再改)。
+    # 把最终选用的那条腿(curl 或升级后的 browser)的输出映射到固定返回字段。
+    #    StatusCode/FinalURL/ResponseHeaders/Content/Error_Message 来自 data;
+    #    AccessMode = 实际选用的腿;FromCache 恒 False(上面已设,不再改)。
     #    (storageState 本步先忽略。)
     result["StatusCode"] = data.get("StatusCode")
+    result["StatusCodeText"] = data.get("StatusCodeText")
+    result["AccessMode"] = access_mode
     result["FinalURL"] = data.get("FinalURL") or url
     result["ResponseHeaders"] = data.get("ResponseHeaders") or []
     result["Content"] = processed_content.content
-    result["Error_Message"] = data.get("error")
     return result
-
-
-def useLocalCache(request: NormalizedHTTPRequestType) -> bool:
-    # 非常简单的启发式判断，只有以下三个都满足才是 True
-    # 1. method == GET
-    # 2. request body is None (一般只被 POST 等用到)
-    # 3. 不包含自定义 request headers
-    if request["method"] != "GET": return False
-    elif request["body"] is not None: return False
-    elif request["headers"] is not None: return False
-
-    return True
-
-
-def _run_browser_leg(
-        payload: dict[str, Any],
-) -> Tuple[Dict[str, Any], Optional[Exception]]: # 返回 data, error (if has)
-    # ---- step 5:浏览器腿(本版唯一接通的路径)-------------------------------
-    # 经私有运行时 scripts/run-with-runtime.sh 调 browser/browser_fetch.mjs。
-    # 路径按本模块所在目录推导,不依赖当前 cwd。
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    runtime_runner = os.path.join(base_dir, "scripts", "run-with-runtime.sh")
-    browser_leg = os.path.join(base_dir, "browser", "browser_fetch.mjs")
-
-    try:
-        proc = subprocess.run(
-            ["bash", runtime_runner, "node", browser_leg,
-             json.dumps(payload, ensure_ascii=False)],
-            cwd=base_dir,
-            capture_output=True,
-            text=True,
-            timeout=180,
-        )
-    except subprocess.TimeoutExpired:
-        return {}, TimeoutError("browser leg timed out after 180s")
-    except Exception as exc:  # 起不来(bash/脚本缺失等),别让 GetWebpage 崩。
-        return {}, RuntimeError(f"failed to launch browser leg: {exc}")
-
-    # browser_fetch.mjs 已处理的错误也走 exit 0,并把结果打到 stdout(一个 JSON 对象)。
-    stdout = (proc.stdout or "").strip()
-    try:
-        data = json.loads(stdout)  # JSONDecodeError 是 ValueError 的子类
-    except ValueError:
-        detail = (proc.stderr or "").strip() or stdout or f"exit code {proc.returncode}"
-        return {}, RuntimeError(
-            f"browser leg produced no valid JSON (exit {proc.returncode}): {detail[:500]}"
-        )
-
-    if not isinstance(data, dict):
-        return {}, ValueError(
-            f"browser leg returned unexpected JSON type: {type(data).__name__}"
-        )
-
-    return data, None
 
 
 def InvalidateWebPage(

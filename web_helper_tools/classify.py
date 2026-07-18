@@ -49,9 +49,9 @@ def ContentClassify(content: Optional[str], status_code: Optional[int], content_
         visible = _WS_RE.sub(" ", visible).strip()
         if len(visible) == 0:
             return ContentVerdict.NO_CONTENT
-        if status_code in (403, 429, 503) and len(visible) < 200:
+        if status_code in (403, 406, 429, 503) and len(visible) < 200:
             return ContentVerdict.BLOCKED
-    elif status_code in (403, 429, 503):
+    elif status_code in (403, 406, 429, 503):
         return ContentVerdict.BLOCKED
 
     return ContentVerdict.OK
