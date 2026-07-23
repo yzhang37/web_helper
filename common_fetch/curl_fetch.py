@@ -23,7 +23,7 @@ import tempfile
 from typing import Optional
 
 from config import CHROME_UA, ACCEPT_LANGUAGE, REFERER
-from web_helper_tools.types import FetchResult, RequestBody, RequestHeaders, ResponseHeaders
+from web_helper_tools.types import FetchPayload, FetchResult, ResponseHeaders
 
 # Same Chrome fingerprint the browser leg uses — sourced from the single config.py.
 # The User-Agent is a default header here; caller headers override/extend these
@@ -125,18 +125,25 @@ def _final_header_pairs(dump_text: str) -> ResponseHeaders:
 
 
 def CurlFetch(
-    url: str,
-    method: Optional[str] = None,
-    request_body: Optional[RequestBody] = None,
-    request_headers: Optional[RequestHeaders] = None,
-    timeout_ms: int = 40000,
+    payload: FetchPayload,
 ) -> tuple[FetchResult, Optional[Exception]]:
-    """Fetch ``url`` by driving the system curl binary. NEVER raises.
+    """Fetch ``payload["url"]`` by driving the system curl binary. NEVER raises.
+
+    Takes the same ``FetchPayload`` as ``BrowserFetch`` so the two legs are
+    interchangeable at the Python layer — same shape in, same shape out.
+    ``body`` is sent byte-exact; JSON-serialising the payload is the browser
+    leg's own constraint and is handled there, not here.
 
     Returns ``(result, err)``. ``err`` is only for curl/tool failures; HTTP
     responses, including 4xx/5xx, are encoded in ``result`` with ``err=None``.
     Content classification is NOT done here.
     """
+    url = payload.get("url")
+    method = payload.get("method")
+    request_body = payload.get("body")
+    request_headers = payload.get("headers")
+    timeout_ms = payload.get("timeoutMs") or 40000
+
     result: FetchResult = {
         "StatusCode": None,
         "StatusCodeText": "",

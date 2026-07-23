@@ -7,6 +7,8 @@ from common_fetch import BrowserFetch, CurlFetch
 from web_helper_tools.cache_driver import cache
 from web_helper_tools.types import *
 
+_MODE_HTTP = "http"
+_MODE_BROWSER = "browser"
 
 def _cache_ttl(headers) -> Optional[int]:
     """从响应头决定缓存 TTL(秒)。返回 None = 不该缓存。
@@ -37,31 +39,34 @@ def GetWebpage(
         method: Optional[str] = None,
         request_body: Optional[RequestBody] = None,
         request_headers: Optional[RequestHeaders] = None,
+        force_access_mode: Optional[str]=None,
 ) -> WebHelperResult:
     """
     GetWebpage
 
-    调用者只需要关心“拿到这个 URL 的可读内容”，不关心底层到底是系统 curl, 或者升级为 browser。
+    调用者只需要关心“拿到这个 URL 的可读内容”，不关心底层到底是系统 curl (http), 或者升级为 browser。
+    - force_access_mode: 强制访问模式。当设置为非空值后，会禁用缓存。（目前故意设计成这样，比较简单）
+      支持的数值： 'http', 'browser'
 
     返回值
-    # - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
-    # - AccessMode：实际成功路径,只能是 curl 或 browser。
-    # - FinalURL：重定向后的最终 URL。
-    # - ResponseHeaders：完整响应头,保留顺序和重复项。
-    # - Content：curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
-    # - FromCache：是否命中 WebHelper 自己的缓存。
-    # - Error_Message：只放 curl/browser 的真实错误信息。
+     - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
+     - AccessMode：实际成功路径,只能是 http 或 browser。
+     - FinalURL：重定向后的最终 URL。
+     - ResponseHeaders：完整响应头,保留顺序和重复项。
+     - Content：http body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
+     - FromCache：是否命中 WebHelper 自己的缓存。
+     - Error_Message：只放 http/browser 的真实错误信息。
     """
 
     result: WebHelperResult = {
         "StatusCode": None,  # HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
         "StatusCodeText": "",
-        "AccessMode": "curl",  # 实际成功路径，只能是 curl 或 browser。
+        "AccessMode": _MODE_HTTP,  # 实际成功路径，只能是 http 或 browser。
         "FinalURL": url,  # 重定向后的最终 URL。
         "ResponseHeaders": [],  # 完整响应头，保留顺序和重复项。
-        "Content": "",  # curl body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
+        "Content": "",  # http body 或 browser 渲染后的 DOM/content,经过 step 6 处理。
         "FromCache": False,  # 是否命中 WebHelper 自己的缓存。
-        "Error_Message": None  # 只放 curl/browser 的真实错误信息。
+        "Error_Message": None  # 只放 http/browser 的真实错误信息。
     }
 
     # 1. 规范化请求输入，并组装为 payload
@@ -69,71 +74,79 @@ def GetWebpage(
     if err is not None:
         result["Error_Message"] = f"failed to normalize http request: ({str(err)})"
         return result
-    payload: FetchPayload = {"url": normalized_request["url"]}
-    if method:
-        payload["method"] = method
-    if request_body is not None:
-        if isinstance(request_body, (bytes, bytearray)):
-            payload["body"] = bytes(request_body).decode("utf-8", "replace")
-        else:
-            payload["body"] = request_body
-    if request_headers is not None:
-        if hasattr(request_headers, "items"):
-            payload["headers"] = {str(k): str(v) for k, v in request_headers.items()}
-        else:
-            payload["headers"] = [[str(k), str(v)] for k, v in request_headers]
+    # payload 只从规范化结果搭一次,两条腿 + cache key 共用同一个来源 —— 否则会变成
+    # "请求走原始值、缓存键走规范化值"的错位。body 原样带着(bytes 也行):JSON 化是 browser 腿的事。
+    payload: FetchPayload = {
+        "url": normalized_request["url"],
+        "method": normalized_request["method"],
+        "headers": [[k, v] for k, v in normalized_request["headers"]],
+    }
+    if normalized_request["body"] is not None:
+        payload["body"] = normalized_request["body"]
 
     # 2. TODO: 读取网站级 settings。
     #    - 根据 url 推导 website/scope。
     #    - 合并该 website 已保存的 cookies、session、默认 headers 等状态。
     #    - 这些状态后续由 SetWebsiteSettings / FreeWebsiteSettings 管。
 
-    # 3. 缓存
+    # 3. 判断是否是 force_access_mode。这一步通常被 crawler worker 使用，因此为了方便，会简单禁用缓存
+    skipping_cache = False
+    if force_access_mode is not None:
+        if force_access_mode.lower().strip() in (_MODE_HTTP, _MODE_BROWSER):
+            skipping_cache = True
+            force_access_mode = force_access_mode.lower().strip()
+        else:
+            result["Error_Message"] = f"force_access_mode must in {[_MODE_HTTP, _MODE_BROWSER]}"
+            return result
+
+    # 4. 缓存
     # - 命中且未失效：直接返回 FromCache=True。
     # - 没命中或 settings revision 变化：继续真实请求。
     # - FromCache 只表示 WebHelper 自己的缓存，不猜浏览器/HTTP 内部缓存。
-    cache_key = web_helper_tools.use_local_cache(normalized_request)
-    if cache_key:
-        hit = cache.get(cache_key)
-        if hit is not None:
-            hit = dict(hit)
-            hit["FromCache"] = True
-            return hit
+    if skipping_cache: # 根据 3, 现在的设计是，如果 force_access_mode，跳过缓存，这样比较简单
+        cache_key = ""
+    else:
+        cache_key = web_helper_tools.use_local_cache(normalized_request)
+        if cache_key:
+            hit = cache.get(cache_key)
+            if hit is not None:
+                hit = dict(hit)
+                hit["FromCache"] = True
+                return hit
     result["FromCache"] = False
 
-    # 4. curl 腿
-    data, err = CurlFetch(
-        normalized_request["url"], method, request_body, request_headers
-    )
-    access_mode = "curl"
+    # 5. 顺序跑两条腿:http 腿 →(需要时)browser 腿。两条腿同签名(都吃 payload),各只有一个调用点。
+    #    force_access_mode 只钉死"要不要升级"这个决定,不改变腿本身。
+    mode = force_access_mode or _MODE_HTTP
+    data = None
 
-    # 4.1 判断 curl 是否被 block，是的话执行 5 升级为 Browser
-    if err is not None:
-        access_mode = "browser"
-    else:
-        content_verdict = web_helper_tools.ContentClassify(
-            data.get("Content") or "",
-            data.get("StatusCode"),
-            data.get("ContentType"),
-        )
-        if content_verdict in (
-            web_helper_tools.ContentVerdict.BLOCKED,
-            web_helper_tools.ContentVerdict.NO_CONTENT,
-        ):
-            access_mode = "browser"
-    # update AccessMode in the final result
-    result["AccessMode"] = access_mode
+    # 5.1 http 腿(强制 browser 时整条跳过,不白打一次)
+    if mode == _MODE_HTTP:
+        result["AccessMode"] = _MODE_HTTP
+        data, err = CurlFetch(payload)
+        if err is not None:
+            if force_access_mode == _MODE_HTTP:   # 强制 http:不升级,如实报错
+                result["Error_Message"] = str(err)
+                return result
+            mode = _MODE_BROWSER                  # 自动模式:抓失败 → 升级
+        elif force_access_mode is None:           # 只有自动模式才看内容判定要不要升级
+            content_verdict = web_helper_tools.ContentClassify(
+                data.get("Content") or "",
+                data.get("StatusCode"),
+                data.get("ContentType"),
+            )
+            if content_verdict in (web_helper_tools.ContentVerdict.BLOCKED, web_helper_tools.ContentVerdict.NO_CONTENT):
+                mode = _MODE_BROWSER
 
-    # 5. Browser with playwright 腿
-    if access_mode == "browser":
-        browser_data, err = BrowserFetch(payload)
+    # 5.2 browser 腿
+    if mode == _MODE_BROWSER:
+        result["AccessMode"] = _MODE_BROWSER      # 先落,失败返回时调用方也知道是哪条腿死的
+        data, err = BrowserFetch(payload)
         if err is not None:
             result["Error_Message"] = str(err)
             return result
 
-        data = browser_data
-
-    # 6. 处理 Content(按 Content-Type 分流)
+    # 7. 处理 Content(按 Content-Type 分流)
     #    HTML → 走 HtmlContentProcessor 壳
     #    其他 → 默认 Handler,原样返回。
     processed_content = web_helper_tools.ProcessContent(
@@ -141,14 +154,14 @@ def GetWebpage(
         data.get("ContentType"),
     )
 
-    # 7. 组装返回值(从 data + 清洗后内容填入 result)
+    # 8. 组装返回值(从 data + 清洗后内容填入 result)
     result["StatusCode"] = data.get("StatusCode")
     result["StatusCodeText"] = data.get("StatusCodeText")
     result["FinalURL"] = data.get("FinalURL") or url
     result["ResponseHeaders"] = data.get("ResponseHeaders") or []
     result["Content"] = processed_content.content
 
-    # 8. 写缓存:仅 200 且响应头允许(no-store/no-cache/private/Set-Cookie 不缓存);
+    # 9. 写缓存:仅 200 且响应头允许(no-store/no-cache/private/Set-Cookie 不缓存);
     #    TTL 从 Cache-Control: max-age,没给用默认。放这儿是因为缓存的就是上面组装好的 result。
     #    (cookies/session 写入 website settings 仍是 TODO。)
     if cache_key and result["StatusCode"] == 200:

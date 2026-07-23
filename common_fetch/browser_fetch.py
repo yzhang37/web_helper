@@ -41,10 +41,17 @@ def BrowserFetch(
     })
     env = {**os.environ, "WEB_HELPER_FINGERPRINT": fingerprint}
 
+    # payload 要经 argv 以 JSON 交给 node —— 这是**本腿自己的**约束,不该漏进共享 payload。
+    # 所以 bytes→str 的转换只在这里做;curl 腿仍拿到字节原样。
+    wire_payload = dict(payload)
+    body = wire_payload.get("body")
+    if isinstance(body, (bytes, bytearray)):
+        wire_payload["body"] = bytes(body).decode("utf-8", "replace")
+
     try:
         proc = subprocess.run(
             ["bash", runtime_runner, "node", browser_leg,
-             json.dumps(payload, ensure_ascii=False)],
+             json.dumps(wire_payload, ensure_ascii=False)],
             cwd=base_dir,
             capture_output=True,
             text=True,
