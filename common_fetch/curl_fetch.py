@@ -143,6 +143,7 @@ def CurlFetch(
     request_body = payload.get("body")
     request_headers = payload.get("headers")
     timeout_ms = payload.get("timeoutMs") or 40000
+    proxy = payload.get("proxy")
 
     result: FetchResult = {
         "StatusCode": None,
@@ -185,6 +186,12 @@ def CurlFetch(
             # NOTE: no -f/--fail — 4xx/5xx must come back as normal results.
             "-w", "%{http_code}\n%{url_effective}\n%{content_type}",
         ]
+        if proxy:
+            # Explicit egress. curl takes http/https/socks5 schemes and inline
+            # user:pass@ credentials as-is, so no splitting is needed here (the
+            # browser leg does have to split them — that is Playwright's constraint).
+            # An explicit --proxy also overrides any http_proxy/https_proxy in the env.
+            args += ["--proxy", str(proxy)]
         if method != "GET":
             args += ["-X", method]
         if has_body:

@@ -86,6 +86,26 @@ function normalizeHeaders(h) {
     return out;
 }
 
+// 'http://user:pass@host:8080' -> { server: 'http://host:8080', username: 'user', password: 'pass' }
+// Playwright requires credentials split out of the server URL; curl takes them inline, which is
+// why only this leg needs the conversion. Returns undefined when there is no proxy (or it is
+// unparseable) so the caller simply omits the option and behaviour stays exactly as before.
+function toPlaywrightProxy(raw) {
+    if (!raw) return undefined;
+    let u;
+    try {
+        u = new URL(String(raw));
+    } catch {
+        return undefined;
+    }
+    const username = decodeURIComponent(u.username || '');
+    const password = decodeURIComponent(u.password || '');
+    const proxy = { server: `${u.protocol}//${u.host}` };
+    if (username) proxy.username = username;
+    if (password) proxy.password = password;
+    return proxy;
+}
+
 function pairsFromHeadersArray(headersArray) {
     return headersArray.map(({ name, value }) => [name, value]);
 }
@@ -227,6 +247,7 @@ async function run(input) {
     const timeout = Number(input.timeoutMs) > 0 ? Number(input.timeoutMs) : 40000;
     const callerHeaders = normalizeHeaders(input.headers);
     const storageState = input.storageState || undefined;
+    const proxy = toPlaywrightProxy(input.proxy);
 
     const pageOptions = {
         // 不设 context userAgent:GET 走 CDP override,POST 在 header 里显式给 UA。
@@ -256,7 +277,10 @@ async function run(input) {
                 // incognito pages let per-request context options (UA, viewport,
                 // storageState, headers) actually apply.
                 useIncognitoPages: true,
-                launchOptions: { headless: true, args: LAUNCH_ARGS },
+                // proxy 设在 launchOptions(浏览器级)而非 context 级:useIncognitoPages 下
+                // context 继承浏览器的出口,一处设置两处生效。没有 proxy 时整个键不出现,
+                // launchOptions 与改动前逐字节相同。
+                launchOptions: { headless: true, args: LAUNCH_ARGS, ...(proxy ? { proxy } : {}) },
             }),
         ],
     });

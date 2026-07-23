@@ -13,6 +13,9 @@ class FetchPayload(TypedDict, total=False):
     headers: dict[str, str] | list[list[str]]
     storageState: dict[str, Any]
     timeoutMs: int
+    # 传输层出口(如 http://user:pass@host:8080 / socks5://host:1080)。两条腿共用同一个值,
+    # 所以 curl 升级 browser 时出口不会掉。**不参与缓存键** —— 它是传输层,不是请求语义。
+    proxy: str
 
 
 class FetchResult(TypedDict):

@@ -13,6 +13,8 @@
 #   --body B                   请求体;`@-` = 从 stdin 读
 #   --header 'K: V'            可重复
 #   --access-mode http|browser 钉死访问模式,不做自动升级(会绕过缓存)
+#   --proxy URL                传输层出口,如 http://user:pass@host:8080 / socks5://host:1080
+#                              curl 腿和 browser 腿共用同一个出口;不传 = 完全维持原行为
 set -euo pipefail
 
 # 获取当前地址
@@ -51,6 +53,7 @@ p.add_argument("--body", help="请求体;`@-` = 从 stdin 读")
 p.add_argument("--header", action="append", default=[], metavar="'K: V'", help="可重复")
 p.add_argument("--access-mode", dest="access_mode", choices=["http", "browser"],
                help="钉死访问模式,不做自动升级(会绕过缓存)")
+p.add_argument("--proxy", help="传输层出口,如 http://user:pass@host:8080;两条腿共用")
 a = p.parse_args()
 
 body = sys.stdin.read() if a.body == "@-" else a.body
@@ -68,6 +71,7 @@ r = web_helper.GetWebpage(
     request_body=body,
     request_headers=headers or None,
     force_access_mode=a.access_mode,
+    proxy=a.proxy,
 )
 
 err = r.get("Error_Message")

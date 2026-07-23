@@ -40,6 +40,7 @@ def GetWebpage(
         request_body: Optional[RequestBody] = None,
         request_headers: Optional[RequestHeaders] = None,
         force_access_mode: Optional[str]=None,
+        proxy: Optional[str] = None,
 ) -> WebHelperResult:
     """
     GetWebpage
@@ -47,6 +48,9 @@ def GetWebpage(
     调用者只需要关心“拿到这个 URL 的可读内容”，不关心底层到底是系统 curl (http), 或者升级为 browser。
     - force_access_mode: 强制访问模式。当设置为非空值后，会禁用缓存。（目前故意设计成这样，比较简单）
       支持的数值： 'http', 'browser'
+    - proxy: 传输层出口，如 'http://user:pass@host:8080'、'socks5://host:1080'。两条腿共用同一个值，
+      curl 升级 browser 时出口不会掉。**不参与缓存键**（只有 200 才写缓存，而 200 与出口无关）。
+      不传 = 完全维持原行为。
 
     返回值
      - StatusCode：HTTP 原始状态码；完全无 HTTP 响应时为 0 或 None。
@@ -83,6 +87,10 @@ def GetWebpage(
     }
     if normalized_request["body"] is not None:
         payload["body"] = normalized_request["body"]
+    # proxy 是传输层,故意**不**走 NormalizeHTTPRequest —— 那份规范化结果是缓存键的来源,
+    # 出口不该改变一个 URL 的身份(且只有 200 才写缓存,200 与走哪个出口无关)。
+    if proxy:
+        payload["proxy"] = proxy
 
     # 2. TODO: 读取网站级 settings。
     #    - 根据 url 推导 website/scope。
