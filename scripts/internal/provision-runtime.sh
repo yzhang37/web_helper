@@ -55,6 +55,10 @@ source "$SCRIPT_DIR/runtime-env.sh"
 [[ "$(node --version)" == "v$WEB_HELPER_NODE_VERSION" ]] || fail "private Node did not install at the pinned version"
 [[ "$(npm --version)" == "$WEB_HELPER_NPM_VERSION" ]] || fail "private npm version mismatch"
 
+# npm 按 **cwd** 找 package.json / lockfile,所以必须先进 $ROOT —— 否则从别的目录调本脚本
+# (比如上层项目的 setup.sh 里 `bash web_helper/setup.sh`)会跑到调用方目录去找 lockfile,报 EUSAGE。
+cd "$ROOT"
+
 if [[ -f "$ROOT/package-lock.json" ]]; then
   npm ci --ignore-scripts
 else
