@@ -12,8 +12,22 @@ fail() {
   exit 1
 }
 
-[[ "$(uname -s)" == "Darwin" && "$(uname -m)" == "arm64" ]] || \
-  fail "this locked toolchain currently supports only Darwin arm64"
+case "$(uname -s):$(uname -m)" in
+  Darwin:arm64)
+    node_platform="darwin-arm64"
+    node_archive="$WEB_HELPER_NODE_DARWIN_ARM64_ARCHIVE"
+    node_sha256="$WEB_HELPER_NODE_DARWIN_ARM64_SHA256"
+    ;;
+  Linux:aarch64|Linux:arm64)
+    node_platform="linux-arm64"
+    node_archive="$WEB_HELPER_NODE_LINUX_ARM64_ARCHIVE"
+    node_sha256="$WEB_HELPER_NODE_LINUX_ARM64_SHA256"
+    ;;
+  *)
+    fail "unsupported host platform: $(uname -s) $(uname -m)"
+    ;;
+esac
+node_url="https://nodejs.org/dist/v$WEB_HELPER_NODE_VERSION/$node_archive"
 
 SYSTEM_CURL=/usr/bin/curl
 [[ -x "$SYSTEM_CURL" ]] || fail "system curl is missing: $SYSTEM_CURL"
@@ -28,7 +42,13 @@ sha256_check() {
   local expected="$1"
   local path="$2"
   local actual
-  actual="$(shasum -a 256 "$path" | awk '{print $1}')"
+  if command -v sha256sum >/dev/null 2>&1; then
+    actual="$(sha256sum "$path" | awk '{print $1}')"
+  elif command -v shasum >/dev/null 2>&1; then
+    actual="$(shasum -a 256 "$path" | awk '{print $1}')"
+  else
+    fail "no SHA-256 tool is available (need sha256sum or shasum)"
+  fi
   [[ "$actual" == "$expected" ]] || fail "SHA-256 mismatch for $(basename "$path")"
 }
 
@@ -41,14 +61,14 @@ download_once() {
   fi
 }
 
-node_archive="$DOWNLOADS/$WEB_HELPER_NODE_ARCHIVE"
-download_once "$WEB_HELPER_NODE_URL" "$node_archive"
-sha256_check "$WEB_HELPER_NODE_SHA256" "$node_archive"
-if [[ ! -x "$NODE_HOME/bin/node" ]]; then
+node_archive_path="$DOWNLOADS/$node_archive"
+download_once "$node_url" "$node_archive_path"
+sha256_check "$node_sha256" "$node_archive_path"
+if [[ ! -x "$NODE_HOME/bin/node" ]] || ! "$NODE_HOME/bin/node" --version >/dev/null 2>&1; then
   rm -rf "$NODE_HOME"
   mkdir -p "$(dirname "$NODE_HOME")"
-  tar -xf "$node_archive" -C "$(dirname "$NODE_HOME")"
-  mv "$(dirname "$NODE_HOME")/node-v$WEB_HELPER_NODE_VERSION-$WEB_HELPER_NODE_PLATFORM" "$NODE_HOME"
+  tar -xf "$node_archive_path" -C "$(dirname "$NODE_HOME")"
+  mv "$(dirname "$NODE_HOME")/node-v$WEB_HELPER_NODE_VERSION-$node_platform" "$NODE_HOME"
 fi
 
 source "$SCRIPT_DIR/runtime-env.sh"
