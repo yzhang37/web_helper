@@ -53,6 +53,20 @@ class HtmlContentProcessor:
         "onblur",
     }
 
+    # Event handlers are usually presentation/runtime noise, but some legacy
+    # job boards use a small declarative call as the only carrier of a detail
+    # identity (real example: onclick="view('360')").  Removing that attribute
+    # leaves the visible row intact while making the production graph unable to
+    # reach its detail page.  Preserve only a single function call whose
+    # arguments are inert string/number literals; complex JavaScript, DOM
+    # mutation and analytics handlers remain removable noise.
+    _DECLARATIVE_EVENT_RE = re.compile(
+        r"^\s*[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*\(\s*"
+        r"(?:(?:['\"][^'\"]*['\"]|-?\d+(?:\.\d+)?)"
+        r"(?:\s*,\s*(?:['\"][^'\"]*['\"]|-?\d+(?:\.\d+)?))*)?"
+        r"\s*\)\s*;?\s*(?:return\s+false\s*;?\s*)?$"
+    )
+
     _ANALYTICS_ATTRIBUTES = {
         "data-ga-event",
         "data-gtm-click",
@@ -99,7 +113,8 @@ class HtmlContentProcessor:
 
                 # 6. event handler, onclick / onload 等事件属性；
                 if lower_name in self._EVENT_ATTRIBUTES:
-                    del node.attrs[name]
+                    if lower_name != "onclick" or not self._is_declarative_event(value):
+                        del node.attrs[name]
 
                 # 7. analytics 属性；
                 if lower_name in self._ANALYTICS_ATTRIBUTES:
@@ -124,6 +139,10 @@ class HtmlContentProcessor:
         self._collapse_text_whitespace(soup)
 
         return str(soup)
+
+    @classmethod
+    def _is_declarative_event(cls, value: object) -> bool:
+        return isinstance(value, str) and bool(cls._DECLARATIVE_EVENT_RE.fullmatch(value))
 
     def _collapse_text_whitespace(self, soup: BeautifulSoup) -> None:
         # Collapse ordinary rendered text; leave script/pre/template-like data exact.
@@ -154,6 +173,7 @@ _DEFAULT_PROCESSOR = DefaultContentProcessor()
 
 _PROCESSORS: dict[str, ContentProcessor] = {
     "text/html": _HTML_PROCESSOR,
+    "application/xhtml+xml": _HTML_PROCESSOR,
     "application/xhtml": _HTML_PROCESSOR,
 }
 
